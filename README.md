@@ -1,5 +1,5 @@
 # model-merge-engine
-# Model & LoRA Merge Tool by UltraMuse
+# Model & LoRA Merge Tool by UltraMuse (Optimized for Z-Image)
 
 A premium, local Gradio-based web interface designed for easily merging two `.safetensors` model checkpoints or baking a LoRA directly into a stable diffusion / transformer checklist. 
 
