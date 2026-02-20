@@ -105,21 +105,40 @@ def merge_models(model_a_path, model_b_path, merge_type, alpha, output_path, out
                     up_weight = lora_parts['up'].to(torch.float32)
                     down_weight = lora_parts['down'].to(torch.float32)
                     
-                    if len(up_weight.shape) == 2:
-                        delta = torch.mm(up_weight, down_weight)
-                    else:
-                        # For conv layers
-                        delta = torch.einsum('o i ..., i j ... -> o j ...', up_weight, down_weight)
-                        
-                    # Calculate scaling
-                    dim = down_weight.shape[0] if len(down_weight.shape) == 2 else down_weight.shape[1]
-                    lora_alpha = lora_parts.get('alpha', float(dim))
-                    scale = alpha * (float(lora_alpha) / float(dim))
+                    # Exact rank is always the first dimension of down_weight
+                    dim = float(down_weight.shape[0])
                     
+                    lora_alpha = lora_parts.get('alpha', dim)
+                    if isinstance(lora_alpha, torch.Tensor):
+                        lora_alpha = float(lora_alpha.item())
+                    else:
+                        lora_alpha = float(lora_alpha)
+                        
+                    scale = alpha * (lora_alpha / dim)
+                    
+                    if len(down_weight.shape) == 2:
+                        # Linear
+                        delta = torch.mm(up_weight, down_weight)
+                    elif down_weight.shape[2:4] == (1, 1):
+                        # Conv2d 1x1
+                        delta = torch.mm(
+                            up_weight.squeeze(-1).squeeze(-1), 
+                            down_weight.squeeze(-1).squeeze(-1)
+                        ).unsqueeze(-1).unsqueeze(-1)
+                    else:
+                        # Conv2d 3x3
+                        delta = torch.nn.functional.conv2d(
+                            down_weight.permute(1, 0, 2, 3), up_weight
+                        ).permute(1, 0, 2, 3)
+                        
                     original_weight = merged_sd[target_key].to(torch.float32)
-                    merged_weight = original_weight + (delta.to(original_weight.device) * scale)
-                    merged_sd[target_key] = merged_weight.to(merged_sd[target_key].dtype)
-                    applied_count += 1
+                    
+                    if original_weight.shape == delta.shape:
+                        merged_weight = original_weight + (delta.to(original_weight.device) * scale)
+                        merged_sd[target_key] = merged_weight.to(merged_sd[target_key].dtype)
+                        applied_count += 1
+                    else:
+                        print(f"Skipping merge on {target_key} due to shape mismatch: Original {original_weight.shape} vs Delta {delta.shape}")
                 else:
                     if target_key not in merged_sd:
                         print(f"Could not find matching base key in checkpoint for: {target_key}")
