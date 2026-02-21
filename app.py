@@ -299,8 +299,8 @@ with gr.Blocks(title="Model Lora Merge tool by UltraMuse", theme=custom_theme, c
 
             with gr.Group():
                 gr.Markdown("### 🎛️ Blending Options")
-                alpha = gr.Slider(minimum=0.0, maximum=1.0, step=0.05, value=0.5, label="Alpha Strength (Ratio / LoRA Weight)")
-                gr.Markdown("<span style='color: #94a3b8; font-size: 0.85em;'>*0.5 splits checkpoints equally. 1.0 applies 100% of a LoRA.*</span>")
+                alpha = gr.Slider(minimum=0.0, maximum=1.0, step=0.05, value=1.0, label="Alpha Strength (Ratio / LoRA Weight)")
+                alpha_hint = gr.Markdown("<span style='color: #94a3b8; font-size: 0.85em;'>*0.5 = equal 50/50 blend between Model A and Model B. 0.0 = 100% Model A. 1.0 = 100% Model B.*</span>")
 
                 output_dtype = gr.Dropdown(
                     ["Keep Original", "fp32", "fp16", "bf16"], 
@@ -321,7 +321,15 @@ with gr.Blocks(title="Model Lora Merge tool by UltraMuse", theme=custom_theme, c
                 gr.Markdown("### 📊 Status Engine")
                 output_log = gr.Textbox(label="Console Output", lines=15, interactive=False, container=False)
 
+    # Dynamic hint text update
+    def update_alpha_hint(strategy):
+        if strategy == "Checkpoint + LoRA":
+            return "<span style='color: #94a3b8; font-size: 0.85em;'>*1.0 = full LoRA strength. 0.7 = 70% effect. 0.5 = half strength. This is equivalent to LoRA strength in ComfyUI.*</span>"
+        else:
+            return "<span style='color: #94a3b8; font-size: 0.85em;'>*0.5 = equal 50/50 blend between Model A and Model B. 0.0 = 100% Model A. 1.0 = 100% Model B.*</span>"
+
     # Event Bindings
+    merge_type.change(fn=update_alpha_hint, inputs=merge_type, outputs=alpha_hint)
     pick_a_btn.click(fn=pick_file, outputs=model_a)
     pick_b_btn.click(fn=pick_file, outputs=model_b)
     pick_out_btn.click(fn=pick_out_dir, outputs=output_path)
