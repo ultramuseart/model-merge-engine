@@ -96,27 +96,41 @@ def merge_models(model_a_path, model_b_path, merge_type, alpha, output_path, out
                     
                 target_key = base_key
                 
-                # Z-Image LoRA often prefixes 'transformer.', but the base model doesn't use it
+                # Step 1: Always strip 'transformer.' prefix if base model doesn't use it
                 if target_key.startswith("transformer."):
-                    alt_key_1 = target_key.replace("transformer.", "")
-                    if alt_key_1 in merged_sd:
-                        target_key = alt_key_1
-                 
-                # Z-Image LoRA to_q/k/v vs qkv projection mapping
-                # Base model uses a fused 'qkv' rather than splitting 'to_q', 'to_k', 'to_v'
-                # If they mapped their LoRA against split attentions during training, we must map back to qkv 
-                # OR if it's diffusers/comfy architecture namespace swapping
+                    stripped = target_key[len("transformer."):]
+                    if stripped in merged_sd:
+                        target_key = stripped
+                    else:
+                        # Strip anyway so subsequent mappings work on clean keys
+                        target_key = stripped
+                
+                # Step 2: Map 'to_out.0' -> 'out' (Z-Image uses 'out', LoRA uses 'to_out.0')
+                if target_key not in merged_sd:
+                    if ".to_out.0." in target_key:
+                        alt_out = target_key.replace(".to_out.0.", ".out.")
+                        if alt_out in merged_sd:
+                            target_key = alt_out
+                
+                # Step 3: Try diffusers namespace swap
                 if target_key not in merged_sd:
                     alt_key_2 = target_key.replace("diffusion_model.", "transformer.")
                     if alt_key_2 in merged_sd:
                         target_key = alt_key_2
                         
+                # Step 4: Handle fused QKV (base uses single 'qkv', LoRA targets split 'to_q/to_k/to_v')
+                is_qkv_fused = False
+                slice_idx = -1
+                        
                 if target_key not in merged_sd:
-                    # Final attempt: many S3-DiT models fuse q,k,v into `qkv`
-                    if "to_q" in target_key or "to_k" in target_key or "to_v" in target_key:
-                        fuse_key = target_key.replace("to_q", "qkv").replace("to_k", "qkv").replace("to_v", "qkv")
+                    if ".to_q." in target_key or ".to_k." in target_key or ".to_v." in target_key:
+                        fuse_key = target_key.replace(".to_q.", ".qkv.").replace(".to_k.", ".qkv.").replace(".to_v.", ".qkv.")
                         if fuse_key in merged_sd:
                             target_key = fuse_key
+                            is_qkv_fused = True
+                            if ".to_q." in base_key: slice_idx = 0
+                            elif ".to_k." in base_key: slice_idx = 1
+                            elif ".to_v." in base_key: slice_idx = 2
 
                 if target_key in merged_sd and 'up' in lora_parts and 'down' in lora_parts:
                     up_weight = lora_parts['up'].to(torch.float32)
@@ -139,9 +153,19 @@ def merge_models(model_a_path, model_b_path, merge_type, alpha, output_path, out
                         # Emulate exact ComfyUI mathematical blending structure
                         delta = torch.mm(
                             up_weight.flatten(start_dim=1), down_weight.flatten(start_dim=1)
-                        ).reshape(original_weight.shape)
+                        )
                         
-                        merged_weight = original_weight + (delta.to(original_weight.device) * scale)
+                        if is_qkv_fused:
+                            dim_chunk = original_weight.shape[0] // 3
+                            start = slice_idx * dim_chunk
+                            end = start + dim_chunk
+                            delta = delta.reshape(original_weight[start:end].shape)
+                            merged_weight = original_weight.clone()
+                            merged_weight[start:end] += (delta.to(original_weight.device) * scale)
+                        else:
+                            delta = delta.reshape(original_weight.shape)
+                            merged_weight = original_weight + (delta.to(original_weight.device) * scale)
+                            
                         merged_sd[target_key] = merged_weight.to(merged_sd[target_key].dtype)
                         applied_count += 1
                     except Exception as e:
