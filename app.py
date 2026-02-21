@@ -95,12 +95,29 @@ def merge_models(model_a_path, model_b_path, merge_type, alpha, output_path, out
                     progress(0.25 + (0.50 * (i / max(1, total_mods))), desc=f"Baking LoRA... ({i}/{total_mods})")
                     
                 target_key = base_key
-                # Attempt to handle diffusers/z_image architecture naming variations
-                if target_key not in merged_sd:
-                    alt_key = target_key.replace("diffusion_model.", "transformer.")
-                    if alt_key in merged_sd:
-                        target_key = alt_key
                 
+                # Z-Image LoRA often prefixes 'transformer.', but the base model doesn't use it
+                if target_key.startswith("transformer."):
+                    alt_key_1 = target_key.replace("transformer.", "")
+                    if alt_key_1 in merged_sd:
+                        target_key = alt_key_1
+                 
+                # Z-Image LoRA to_q/k/v vs qkv projection mapping
+                # Base model uses a fused 'qkv' rather than splitting 'to_q', 'to_k', 'to_v'
+                # If they mapped their LoRA against split attentions during training, we must map back to qkv 
+                # OR if it's diffusers/comfy architecture namespace swapping
+                if target_key not in merged_sd:
+                    alt_key_2 = target_key.replace("diffusion_model.", "transformer.")
+                    if alt_key_2 in merged_sd:
+                        target_key = alt_key_2
+                        
+                if target_key not in merged_sd:
+                    # Final attempt: many S3-DiT models fuse q,k,v into `qkv`
+                    if "to_q" in target_key or "to_k" in target_key or "to_v" in target_key:
+                        fuse_key = target_key.replace("to_q", "qkv").replace("to_k", "qkv").replace("to_v", "qkv")
+                        if fuse_key in merged_sd:
+                            target_key = fuse_key
+
                 if target_key in merged_sd and 'up' in lora_parts and 'down' in lora_parts:
                     up_weight = lora_parts['up'].to(torch.float32)
                     down_weight = lora_parts['down'].to(torch.float32)
@@ -133,7 +150,11 @@ def merge_models(model_a_path, model_b_path, merge_type, alpha, output_path, out
                     if target_key not in merged_sd:
                         print(f"Could not find matching base key in checkpoint for: {target_key}")
 
-            print(f"Applied {applied_count} LoRA modules.")
+            print(f"Applied {applied_count} out of {total_mods} LoRA modules.")
+            
+            if applied_count == 0:
+                print("ABORTING MERGE: Zero layers successfully mapped to the active checkpoint.")
+                return f"Error: The LoRA file did not match the layer structure of the Base Checkpoint. Applied {applied_count} modules.\nThis tool currently does not safely support splitting/fused qkv projection mapping automatically. Ensure your LoRA targets standard Z-Image layer strings."
 
         target_dtype = None
         if output_dtype == "fp16": target_dtype = torch.float16
